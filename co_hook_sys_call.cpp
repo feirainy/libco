@@ -41,29 +41,40 @@
 #include <netdb.h>
 
 #include <time.h>
-#include <map>
 #include "co_routine.h"
 #include "co_routine_inner.h"
 #include "co_routine_specific.h"
 
 typedef long long ll64_t;
 
+/*
+ * 每个fd需要对应分配一个rpchook_t
+ */
+static rpchook_t *g_rpchook_socket_fd[ 102400 ] = { 0 };
 struct rpchook_t
 {
-	int user_flag;
-	struct sockaddr_in dest; //maybe sockaddr_un;
-	int domain; //AF_LOCAL , AF_INET
+	int user_flag;                    // fcntl设置fd的flag
+	struct sockaddr_in dest;          // maybe sockaddr_un; 连接的ip地址
+	int domain;                       // AF_LOCAL , AF_INET
 
-	struct timeval read_timeout;
-	struct timeval write_timeout;
+	struct timeval read_timeout;      // read时如果没有设置非阻塞，poll的timeout时间
+    struct timeval write_timeout;     // ???
 };
+
+
+/*
+ * ??? 好像压根没有用到
+ */
 static inline pid_t GetPid()
 {
 	char **p = (char**)pthread_self();
 	return p ? *(pid_t*)(p + 18) : getpid();
 }
-static rpchook_t *g_rpchook_socket_fd[ 102400 ] = { 0 };
 
+
+/*
+ * 这些都是要hook的rpc的函数指针定义
+ */
 typedef int (*socket_pfn_t)(int domain, int type, int protocol);
 typedef int (*connect_pfn_t)(int socket, const struct sockaddr *address, socklen_t address_len);
 typedef int (*close_pfn_t)(int fd);
@@ -99,6 +110,10 @@ typedef hostent* (*gethostbyname_pfn_t)(const char *name);
 typedef res_state (*__res_state_pfn_t)();
 typedef int (*__poll_pfn_t)(struct pollfd fds[], nfds_t nfds, int timeout);
 
+
+/*
+ * 标准库下的sys call的函数指针
+ */
 static socket_pfn_t g_sys_socket_func 	= (socket_pfn_t)dlsym(RTLD_NEXT,"socket");
 static connect_pfn_t g_sys_connect_func = (connect_pfn_t)dlsym(RTLD_NEXT,"connect");
 static close_pfn_t g_sys_close_func 	= (close_pfn_t)dlsym(RTLD_NEXT,"close");
@@ -147,6 +162,9 @@ static pthread_rwlock_unlock_pfn_t g_sys_pthread_rwlock_unlock_func
 
 
 
+/*
+ * ??? 好像压根没有用到
+ */
 static inline unsigned long long get_tick_count()
 {
 	uint32_t lo, hi;
@@ -156,6 +174,10 @@ static inline unsigned long long get_tick_count()
 	return ((unsigned long long)lo) | (((unsigned long long)hi) << 32);
 }
 
+
+/*
+ * ??? 微信内部，用不上
+ */
 struct rpchook_connagent_head_t
 {
     unsigned char    bVersion;
@@ -168,18 +190,28 @@ struct rpchook_connagent_head_t
 }__attribute__((packed));
 
 
+/*
+ * 系统调用hook宏，其实一般在上面都定义了
+ */
 #define HOOK_SYS_FUNC(name) if( !g_sys_##name##_func ) { g_sys_##name##_func = (name##_pfn_t)dlsym(RTLD_NEXT,#name); }
 
-static inline ll64_t diff_ms(struct timeval &begin,struct timeval &end)
+
+/*
+ * 计算时间差
+ */
+static inline ll64_t diff_ms(struct timeval &begin, struct timeval &end)
 {
 	ll64_t u = (end.tv_sec - begin.tv_sec) ;
 	u *= 1000 * 10;
 	u += ( end.tv_usec - begin.tv_usec ) / (  100 );
 	return u;
-}
+} 
 
 
-
+/*
+ * 根据fd取对应的rpchook_t
+ * 假设fd分配的时候已经对应生成了rpchook_t
+ */
 static inline rpchook_t * get_by_fd( int fd )
 {
 	if( fd > -1 && fd < (int)sizeof(g_rpchook_socket_fd) / (int)sizeof(g_rpchook_socket_fd[0]) )
@@ -188,11 +220,17 @@ static inline rpchook_t * get_by_fd( int fd )
 	}
 	return NULL;
 }
+
+
+/*
+ * 对fd分配一个rpchook_t，设置读写超时均为1s
+ * fd需要在g_rpchook_socket_fd范围内，即102400
+ */
 static inline rpchook_t * alloc_by_fd( int fd )
 {
 	if( fd > -1 && fd < (int)sizeof(g_rpchook_socket_fd) / (int)sizeof(g_rpchook_socket_fd[0]) )
 	{
-		rpchook_t *lp = (rpchook_t*)calloc( 1,sizeof(rpchook_t) );
+		rpchook_t *lp = (rpchook_t*)calloc( 1, sizeof(rpchook_t) );
 		lp->read_timeout.tv_sec = 1;
 		lp->write_timeout.tv_sec = 1;
 		g_rpchook_socket_fd[ fd ] = lp;
@@ -200,6 +238,11 @@ static inline rpchook_t * alloc_by_fd( int fd )
 	}
 	return NULL;
 }
+
+
+/*
+ * 释放fd对应的rpchook_t的内存
+ */
 static inline void free_by_fd( int fd )
 {
 	if( fd > -1 && fd < (int)sizeof(g_rpchook_socket_fd) / (int)sizeof(g_rpchook_socket_fd[0]) )
@@ -214,15 +257,20 @@ static inline void free_by_fd( int fd )
 	return;
 
 }
+
+
+/*
+ * 分配fd，对应分配rpchook_t，对fd的flag做额外处理
+ */
 int socket(int domain, int type, int protocol)
 {
 	HOOK_SYS_FUNC( socket );
 
 	if( !co_is_enable_sys_hook() )
 	{
-		return g_sys_socket_func( domain,type,protocol );
+		return g_sys_socket_func( domain, type, protocol );
 	}
-	int fd = g_sys_socket_func(domain,type,protocol);
+	int fd = g_sys_socket_func(domain, type, protocol);
 	if( fd < 0 )
 	{
 		return fd;
@@ -231,14 +279,18 @@ int socket(int domain, int type, int protocol)
 	rpchook_t *lp = alloc_by_fd( fd );
 	lp->domain = domain;
 	
-	fcntl( fd, F_SETFL, g_sys_fcntl_func(fd, F_GETFL,0 ) );
+	fcntl( fd, F_SETFL, g_sys_fcntl_func(fd, F_GETFL, 0 ) );  // flag读出来再set回去，因为需要hook sys call以后的额外处理, F_SETFL会加上O_NONBLOCK
 
 	return fd;
 }
 
+
+/*
+ * accept以后，需要对对应fd分配rpchook_t
+ */
 int co_accept( int fd, struct sockaddr *addr, socklen_t *len )
 {
-	int cli = accept( fd,addr,len );
+	int cli = accept( fd, addr, len );
 	if( cli < 0 )
 	{
 		return cli;
@@ -246,46 +298,60 @@ int co_accept( int fd, struct sockaddr *addr, socklen_t *len )
 	alloc_by_fd( cli );
 	return cli;
 }
+
+
+/*
+ * connect以后，给fd分配rpchook_t
+ */
 int connect(int fd, const struct sockaddr *address, socklen_t address_len)
 {
 	HOOK_SYS_FUNC( connect );
 
 	if( !co_is_enable_sys_hook() )
 	{
-		return g_sys_connect_func(fd,address,address_len);
+		return g_sys_connect_func(fd, address, address_len);
 	}
 
 	//1.sys call
-	int ret = g_sys_connect_func( fd,address,address_len );
+	int ret = g_sys_connect_func( fd, address, address_len );
 
 	rpchook_t *lp = get_by_fd( fd );
 	if( !lp ) return ret;
 
 	if( sizeof(lp->dest) >= address_len )
 	{
-		 memcpy( &(lp->dest),address,(int)address_len );
+		 memcpy( &(lp->dest), address, (int)address_len );
 	}
+
 	if( O_NONBLOCK & lp->user_flag ) 
 	{
+        // 用户设置非阻塞，马上返回
 		return ret;
 	}
 	
 	if (!(ret < 0 && errno == EINPROGRESS))
 	{
+        // 不是fd非阻塞的失败直接返回
+        // When you call connect() on a non-blocking socket, 
+        // you'll get EINPROGRESS instead of blocking 
+        // waiting for the connection handshake to complete. 
+        // Then, you have to select() for writability, 
+        // and check the socket error to see if the connection has completed.
 		return ret;
 	}
 
 	//2.wait
+    // 用户设置了阻塞，而fd实质上是设置为非阻塞的，用poll等超时来模仿阻塞
 	int pollret = 0;
 	struct pollfd pf = { 0 };
 
-	for(int i=0;i<3;i++) //25s * 3 = 75s
+	for(int i=0; i<3; i++) //25s * 3 = 75s
 	{
-		memset( &pf,0,sizeof(pf) );
+		memset( &pf, 0, sizeof(pf) );
 		pf.fd = fd;
 		pf.events = ( POLLOUT | POLLERR | POLLHUP );
 
-		pollret = poll( &pf,1,25000 );
+		pollret = poll( &pf, 1, 25000 );
 
 		if( 1 == pollret  )
 		{
@@ -301,7 +367,7 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
 	//3.set errno
 	int err = 0;
 	socklen_t errlen = sizeof(err);
-	getsockopt( fd,SOL_SOCKET,SO_ERROR,&err,&errlen);
+	getsockopt( fd, SOL_SOCKET, SO_ERROR, &err, &errlen);  // 获取失败errno  ????
 	if( err ) 
 	{
 		errno = err;
@@ -314,6 +380,9 @@ int connect(int fd, const struct sockaddr *address, socklen_t address_len)
 }
 
 
+/*
+ * close fd并释放对应的rpchook_t
+ */
 int close(int fd)
 {
 	HOOK_SYS_FUNC( close );
@@ -328,21 +397,30 @@ int close(int fd)
 
 	return ret;
 }
+
+
+
+/*
+ * 取出fd对应的rpchook_t，如果有hook且非阻塞直接read，否则poll之
+ */
 ssize_t read( int fd, void *buf, size_t nbyte )
 {
 	HOOK_SYS_FUNC( read );
 	
 	if( !co_is_enable_sys_hook() )
 	{
-		return g_sys_read_func( fd,buf,nbyte );
+		return g_sys_read_func( fd, buf, nbyte );
 	}
 	rpchook_t *lp = get_by_fd( fd );
 
 	if( !lp || ( O_NONBLOCK & lp->user_flag ) ) 
 	{
-		ssize_t ret = g_sys_read_func( fd,buf,nbyte );
+        // 如果有hook且非阻塞，则直接read
+		ssize_t ret = g_sys_read_func( fd, buf, nbyte );
 		return ret;
 	}
+
+    // 如果没有设置非阻塞，则poll之，但socket fd都有设置，所以一般走前面的逻辑
 	int timeout = ( lp->read_timeout.tv_sec * 1000 ) 
 				+ ( lp->read_timeout.tv_usec / 1000 );
 
@@ -350,39 +428,48 @@ ssize_t read( int fd, void *buf, size_t nbyte )
 	pf.fd = fd;
 	pf.events = ( POLLIN | POLLERR | POLLHUP );
 
-	int pollret = poll( &pf,1,timeout );
+	int pollret = poll( &pf, 1, timeout );
 
 	ssize_t readret = g_sys_read_func( fd,(char*)buf ,nbyte );
 
 	if( readret < 0 )
 	{
 		co_log_err("CO_ERR: read fd %d ret %ld errno %d poll ret %d timeout %d",
-					fd,readret,errno,pollret,timeout);
+					fd, readret, errno, pollret, timeout);
 	}
 
 	return readret;
 	
 }
+
+
+/*
+ * 取出fd对应的rpchook_t，如果有hook且非阻塞直接write，否则如果一次write不完则for循环poll之
+ */
 ssize_t write( int fd, const void *buf, size_t nbyte )
 {
 	HOOK_SYS_FUNC( write );
 	
 	if( !co_is_enable_sys_hook() )
 	{
-		return g_sys_write_func( fd,buf,nbyte );
+		return g_sys_write_func( fd, buf, nbyte );
 	}
 	rpchook_t *lp = get_by_fd( fd );
 
 	if( !lp || ( O_NONBLOCK & lp->user_flag ) )
 	{
-		ssize_t ret = g_sys_write_func( fd,buf,nbyte );
+        // 如果有hook且非阻塞，则直接write
+		ssize_t ret = g_sys_write_func( fd, buf, nbyte );
 		return ret;
 	}
+
+    // 如果没有设置非阻塞，先直接write
+    // 如果不能一次write成功，则用poll等待可写
 	size_t wrotelen = 0;
 	int timeout = ( lp->write_timeout.tv_sec * 1000 ) 
 				+ ( lp->write_timeout.tv_usec / 1000 );
 
-	ssize_t writeret = g_sys_write_func( fd,(const char*)buf + wrotelen,nbyte - wrotelen );
+	ssize_t writeret = g_sys_write_func( fd,(const char*)buf + wrotelen, nbyte - wrotelen );
 
 	if (writeret == 0)
 	{
@@ -399,9 +486,9 @@ ssize_t write( int fd, const void *buf, size_t nbyte )
 		struct pollfd pf = { 0 };
 		pf.fd = fd;
 		pf.events = ( POLLOUT | POLLERR | POLLHUP );
-		poll( &pf,1,timeout );
+		poll( &pf, 1, timeout );
 
-		writeret = g_sys_write_func( fd,(const char*)buf + wrotelen,nbyte - wrotelen );
+		writeret = g_sys_write_func( fd,(const char*)buf + wrotelen, nbyte - wrotelen );
 		
 		if( writeret <= 0 )
 		{
@@ -416,6 +503,9 @@ ssize_t write( int fd, const void *buf, size_t nbyte )
 	return wrotelen;
 }
 
+/*
+ * 略
+ */
 ssize_t sendto(int socket, const void *message, size_t length,
 	                 int flags, const struct sockaddr *dest_addr,
 					               socklen_t dest_len)
@@ -430,16 +520,16 @@ ssize_t sendto(int socket, const void *message, size_t length,
 	HOOK_SYS_FUNC( sendto );
 	if( !co_is_enable_sys_hook() )
 	{
-		return g_sys_sendto_func( socket,message,length,flags,dest_addr,dest_len );
+		return g_sys_sendto_func( socket, message, length, flags, dest_addr, dest_len );
 	}
 
 	rpchook_t *lp = get_by_fd( socket );
 	if( !lp || ( O_NONBLOCK & lp->user_flag ) )
 	{
-		return g_sys_sendto_func( socket,message,length,flags,dest_addr,dest_len );
+		return g_sys_sendto_func( socket, message, length, flags, dest_addr, dest_len );
 	}
 
-	ssize_t ret = g_sys_sendto_func( socket,message,length,flags,dest_addr,dest_len );
+	ssize_t ret = g_sys_sendto_func( socket, message, length, flags, dest_addr, dest_len );
 	if( ret < 0 && EAGAIN == errno )
 	{
 		int timeout = ( lp->write_timeout.tv_sec * 1000 ) 
@@ -449,14 +539,17 @@ ssize_t sendto(int socket, const void *message, size_t length,
 		struct pollfd pf = { 0 };
 		pf.fd = socket;
 		pf.events = ( POLLOUT | POLLERR | POLLHUP );
-		poll( &pf,1,timeout );
+		poll( &pf, 1, timeout );
 
-		ret = g_sys_sendto_func( socket,message,length,flags,dest_addr,dest_len );
+		ret = g_sys_sendto_func( socket, message, length, flags, dest_addr, dest_len );
 
 	}
 	return ret;
 }
 
+/*
+ * 略
+ */
 ssize_t recvfrom(int socket, void *buffer, size_t length,
 	                 int flags, struct sockaddr *address,
 					               socklen_t *address_len)
@@ -464,13 +557,13 @@ ssize_t recvfrom(int socket, void *buffer, size_t length,
 	HOOK_SYS_FUNC( recvfrom );
 	if( !co_is_enable_sys_hook() )
 	{
-		return g_sys_recvfrom_func( socket,buffer,length,flags,address,address_len );
+		return g_sys_recvfrom_func( socket, buffer, length, flags, address, address_len );
 	}
 
 	rpchook_t *lp = get_by_fd( socket );
 	if( !lp || ( O_NONBLOCK & lp->user_flag ) )
 	{
-		return g_sys_recvfrom_func( socket,buffer,length,flags,address,address_len );
+		return g_sys_recvfrom_func( socket, buffer, length, flags, address, address_len );
 	}
 
 	int timeout = ( lp->read_timeout.tv_sec * 1000 ) 
@@ -480,31 +573,34 @@ ssize_t recvfrom(int socket, void *buffer, size_t length,
 	struct pollfd pf = { 0 };
 	pf.fd = socket;
 	pf.events = ( POLLIN | POLLERR | POLLHUP );
-	poll( &pf,1,timeout );
+	poll( &pf, 1, timeout );
 
-	ssize_t ret = g_sys_recvfrom_func( socket,buffer,length,flags,address,address_len );
+	ssize_t ret = g_sys_recvfrom_func( socket, buffer, length, flags, address, address_len );
 	return ret;
 }
 
+/*
+ * 略
+ */
 ssize_t send(int socket, const void *buffer, size_t length, int flags)
 {
 	HOOK_SYS_FUNC( send );
 	
 	if( !co_is_enable_sys_hook() )
 	{
-		return g_sys_send_func( socket,buffer,length,flags );
+		return g_sys_send_func( socket, buffer, length, flags );
 	}
 	rpchook_t *lp = get_by_fd( socket );
 
 	if( !lp || ( O_NONBLOCK & lp->user_flag ) )
 	{
-		return g_sys_send_func( socket,buffer,length,flags );
+		return g_sys_send_func( socket, buffer, length, flags );
 	}
 	size_t wrotelen = 0;
 	int timeout = ( lp->write_timeout.tv_sec * 1000 ) 
 				+ ( lp->write_timeout.tv_usec / 1000 );
 
-	ssize_t writeret = g_sys_send_func( socket,buffer,length,flags );
+	ssize_t writeret = g_sys_send_func( socket, buffer, length, flags );
 	if (writeret == 0)
 	{
 		return writeret;
@@ -520,9 +616,9 @@ ssize_t send(int socket, const void *buffer, size_t length, int flags)
 		struct pollfd pf = { 0 };
 		pf.fd = socket;
 		pf.events = ( POLLOUT | POLLERR | POLLHUP );
-		poll( &pf,1,timeout );
+		poll( &pf, 1, timeout );
 
-		writeret = g_sys_send_func( socket,(const char*)buffer + wrotelen,length - wrotelen,flags );
+		writeret = g_sys_send_func( socket,(const char*)buffer + wrotelen, length - wrotelen, flags );
 		
 		if( writeret <= 0 )
 		{
@@ -537,19 +633,22 @@ ssize_t send(int socket, const void *buffer, size_t length, int flags)
 	return wrotelen;
 }
 
+/*
+ * 略
+ */
 ssize_t recv( int socket, void *buffer, size_t length, int flags )
 {
 	HOOK_SYS_FUNC( recv );
 	
 	if( !co_is_enable_sys_hook() )
 	{
-		return g_sys_recv_func( socket,buffer,length,flags );
+		return g_sys_recv_func( socket, buffer, length, flags );
 	}
 	rpchook_t *lp = get_by_fd( socket );
 
 	if( !lp || ( O_NONBLOCK & lp->user_flag ) ) 
 	{
-		return g_sys_recv_func( socket,buffer,length,flags );
+		return g_sys_recv_func( socket, buffer, length, flags );
 	}
 	int timeout = ( lp->read_timeout.tv_sec * 1000 ) 
 				+ ( lp->read_timeout.tv_usec / 1000 );
@@ -558,68 +657,37 @@ ssize_t recv( int socket, void *buffer, size_t length, int flags )
 	pf.fd = socket;
 	pf.events = ( POLLIN | POLLERR | POLLHUP );
 
-	int pollret = poll( &pf,1,timeout );
+	int pollret = poll( &pf, 1, timeout );
 
-	ssize_t readret = g_sys_recv_func( socket,buffer,length,flags );
+	ssize_t readret = g_sys_recv_func( socket, buffer, length, flags );
 
 	if( readret < 0 )
 	{
 		co_log_err("CO_ERR: read fd %d ret %ld errno %d poll ret %d timeout %d",
-					socket,readret,errno,pollret,timeout);
+					socket, readret, errno, pollret, timeout);
 	}
 
 	return readret;
 	
 }
 
-extern int co_poll_inner( stCoEpoll_t *ctx,struct pollfd fds[], nfds_t nfds, int timeout, poll_pfn_t pollfunc);
+extern int co_poll_inner( stCoEpoll_t *ctx, struct pollfd fds[], nfds_t nfds, int timeout, poll_pfn_t pollfunc);
 
 int poll(struct pollfd fds[], nfds_t nfds, int timeout)
 {
+
 	HOOK_SYS_FUNC( poll );
 
-	if (!co_is_enable_sys_hook() || timeout == 0) {
-		return g_sys_poll_func(fds, nfds, timeout);
-	}
-	pollfd *fds_merge = NULL;
-	nfds_t nfds_merge = 0;
-	std::map<int, int> m;  // fd --> idx
-	std::map<int, int>::iterator it;
-	if (nfds > 1) {
-		fds_merge = (pollfd *)malloc(sizeof(pollfd) * nfds);
-		for (size_t i = 0; i < nfds; i++) {
-			if ((it = m.find(fds[i].fd)) == m.end()) {
-				fds_merge[nfds_merge] = fds[i];
-				m[fds[i].fd] = nfds_merge;
-				nfds_merge++;
-			} else {
-				int j = it->second;
-				fds_merge[j].events |= fds[i].events;  // merge in j slot
-			}
-		}
+	if( !co_is_enable_sys_hook() )
+	{
+		return g_sys_poll_func( fds, nfds, timeout );
 	}
 
-	int ret = 0;
-	if (nfds_merge == nfds || nfds == 1) {
-		ret = co_poll_inner(co_get_epoll_ct(), fds, nfds, timeout, g_sys_poll_func);
-	} else {
-		ret = co_poll_inner(co_get_epoll_ct(), fds_merge, nfds_merge, timeout,
-				g_sys_poll_func);
-		if (ret > 0) {
-			for (size_t i = 0; i < nfds; i++) {
-				it = m.find(fds[i].fd);
-				if (it != m.end()) {
-					int j = it->second;
-					fds[i].revents = fds_merge[j].revents & fds[i].events;
-				}
-			}
-		}
-	}
-	free(fds_merge);
-	return ret;
-
+	return co_poll_inner( co_get_epoll_ct(), fds, nfds, timeout, g_sys_poll_func);
 
 }
+
+
 int setsockopt(int fd, int level, int option_name,
 			                 const void *option_value, socklen_t option_len)
 {
@@ -627,7 +695,7 @@ int setsockopt(int fd, int level, int option_name,
 
 	if( !co_is_enable_sys_hook() )
 	{
-		return g_sys_setsockopt_func( fd,level,option_name,option_value,option_len );
+		return g_sys_setsockopt_func( fd, level, option_name, option_value, option_len );
 	}
 	rpchook_t *lp = get_by_fd( fd );
 
@@ -636,17 +704,20 @@ int setsockopt(int fd, int level, int option_name,
 		struct timeval *val = (struct timeval*)option_value;
 		if( SO_RCVTIMEO == option_name  ) 
 		{
-			memcpy( &lp->read_timeout,val,sizeof(*val) );
+			memcpy( &lp->read_timeout, val, sizeof(*val) );
 		}
 		else if( SO_SNDTIMEO == option_name )
 		{
-			memcpy( &lp->write_timeout,val,sizeof(*val) );
+			memcpy( &lp->write_timeout, val, sizeof(*val) );
 		}
 	}
-	return g_sys_setsockopt_func( fd,level,option_name,option_value,option_len );
+	return g_sys_setsockopt_func( fd, level, option_name, option_value, option_len );
 }
 
 
+/*
+ * fcntl需要且仅需要对F_SETFL作处理
+ */
 int fcntl(int fildes, int cmd, ...)
 {
 	HOOK_SYS_FUNC( fcntl );
@@ -657,7 +728,7 @@ int fcntl(int fildes, int cmd, ...)
 	}
 
 	va_list arg_list;
-	va_start( arg_list,cmd );
+	va_start( arg_list, cmd );
 
 	int ret = -1;
 	rpchook_t *lp = get_by_fd( fildes );
@@ -665,68 +736,70 @@ int fcntl(int fildes, int cmd, ...)
 	{
 		case F_DUPFD:
 		{
-			int param = va_arg(arg_list,int);
-			ret = g_sys_fcntl_func( fildes,cmd,param );
+			int param = va_arg(arg_list, int);
+			ret = g_sys_fcntl_func( fildes, cmd, param );
 			break;
 		}
 		case F_GETFD:
 		{
-			ret = g_sys_fcntl_func( fildes,cmd );
+			ret = g_sys_fcntl_func( fildes, cmd );
 			break;
 		}
 		case F_SETFD:
 		{
-			int param = va_arg(arg_list,int);
-			ret = g_sys_fcntl_func( fildes,cmd,param );
+			int param = va_arg(arg_list, int);
+			ret = g_sys_fcntl_func( fildes, cmd, param );
 			break;
 		}
 		case F_GETFL:
 		{
-			ret = g_sys_fcntl_func( fildes,cmd );
+			ret = g_sys_fcntl_func( fildes, cmd );
 			break;
 		}
 		case F_SETFL:
 		{
-			int param = va_arg(arg_list,int);
+			int param = va_arg(arg_list, int);
 			int flag = param;
 			if( co_is_enable_sys_hook() && lp )
 			{
+                // 如果hook sys且有分配rpchook_t，则需要fd非阻塞，真正的用户设置用lp->user_flag可以为非阻塞
 				flag |= O_NONBLOCK;
 			}
-			ret = g_sys_fcntl_func( fildes,cmd,flag );
+			ret = g_sys_fcntl_func( fildes, cmd, flag );
 			if( 0 == ret && lp )
 			{
+                // rpchook_t中记录fd的flag
 				lp->user_flag = param;
 			}
 			break;
 		}
 		case F_GETOWN:
 		{
-			ret = g_sys_fcntl_func( fildes,cmd );
+			ret = g_sys_fcntl_func( fildes, cmd );
 			break;
 		}
 		case F_SETOWN:
 		{
-			int param = va_arg(arg_list,int);
-			ret = g_sys_fcntl_func( fildes,cmd,param );
+			int param = va_arg(arg_list, int);
+			ret = g_sys_fcntl_func( fildes, cmd, param );
 			break;
 		}
 		case F_GETLK:
 		{
-			struct flock *param = va_arg(arg_list,struct flock *);
-			ret = g_sys_fcntl_func( fildes,cmd,param );
+			struct flock *param = va_arg(arg_list, struct flock *);
+			ret = g_sys_fcntl_func( fildes, cmd, param );
 			break;
 		}
 		case F_SETLK:
 		{
-			struct flock *param = va_arg(arg_list,struct flock *);
-			ret = g_sys_fcntl_func( fildes,cmd,param );
+			struct flock *param = va_arg(arg_list, struct flock *);
+			ret = g_sys_fcntl_func( fildes, cmd, param );
 			break;
 		}
 		case F_SETLKW:
 		{
-			struct flock *param = va_arg(arg_list,struct flock *);
-			ret = g_sys_fcntl_func( fildes,cmd,param );
+			struct flock *param = va_arg(arg_list, struct flock *);
+			ret = g_sys_fcntl_func( fildes, cmd, param );
 			break;
 		}
 	}
@@ -748,12 +821,12 @@ struct stCoSysEnvArr_t
 };
 static stCoSysEnvArr_t *dup_co_sysenv_arr( stCoSysEnvArr_t * arr )
 {
-	stCoSysEnvArr_t *lp = (stCoSysEnvArr_t*)calloc( sizeof(stCoSysEnvArr_t),1 );	
+	stCoSysEnvArr_t *lp = (stCoSysEnvArr_t*)calloc( sizeof(stCoSysEnvArr_t), 1 );	
 	if( arr->cnt )
 	{
-		lp->data = (stCoSysEnv_t*)calloc( sizeof(stCoSysEnv_t) * arr->cnt,1 );
+		lp->data = (stCoSysEnv_t*)calloc( sizeof(stCoSysEnv_t) * arr->cnt, 1 );
 		lp->cnt = arr->cnt;
-		memcpy( lp->data,arr->data,sizeof( stCoSysEnv_t ) * arr->cnt );
+		memcpy( lp->data, arr->data, sizeof( stCoSysEnv_t ) * arr->cnt );
 	}
 	return lp;
 }
@@ -772,7 +845,7 @@ void co_set_env_list( const char *name[],size_t cnt)
 	{
 		return ;
 	}
-	g_co_sysenv.data = (stCoSysEnv_t*)calloc( 1,sizeof(stCoSysEnv_t) * cnt  );
+	g_co_sysenv.data = (stCoSysEnv_t*)calloc( 1, sizeof(stCoSysEnv_t) * cnt  );
 
 	for(size_t i=0;i<cnt;i++)
 	{
@@ -783,12 +856,12 @@ void co_set_env_list( const char *name[],size_t cnt)
 	}
 	if( g_co_sysenv.cnt > 1 )
 	{
-		qsort( g_co_sysenv.data,g_co_sysenv.cnt,sizeof(stCoSysEnv_t),co_sysenv_comp );
+		qsort( g_co_sysenv.data, g_co_sysenv.cnt, sizeof(stCoSysEnv_t), co_sysenv_comp );
 		stCoSysEnv_t *lp = g_co_sysenv.data;
 		stCoSysEnv_t *lq = g_co_sysenv.data + 1;
 		for(size_t i=1;i<g_co_sysenv.cnt;i++)
 		{
-			if( strcmp( lp->name,lq->name ) )
+			if( strcmp( lp->name, lq->name ) )
 			{
 				++lp;
 				if( lq != lp  )
@@ -817,9 +890,9 @@ int setenv(const char *n, const char *value, int overwrite)
 			}
 			stCoSysEnvArr_t *arr = (stCoSysEnvArr_t*)(self->pvEnv);
 
-			stCoSysEnv_t name = { (char*)n,0 };
+			stCoSysEnv_t name = { (char*)n, 0 };
 
-			stCoSysEnv_t *e = (stCoSysEnv_t*)bsearch( &name,arr->data,arr->cnt,sizeof(name),co_sysenv_comp );
+			stCoSysEnv_t *e = (stCoSysEnv_t*)bsearch( &name, arr->data, arr->cnt, sizeof(name), co_sysenv_comp );
 
 			if( e )
 			{
@@ -833,7 +906,7 @@ int setenv(const char *n, const char *value, int overwrite)
 		}
 
 	}
-	return g_sys_setenv_func( n,value,overwrite );
+	return g_sys_setenv_func( n, value, overwrite );
 }
 int unsetenv(const char *n)
 {
@@ -849,9 +922,9 @@ int unsetenv(const char *n)
 			}
 			stCoSysEnvArr_t *arr = (stCoSysEnvArr_t*)(self->pvEnv);
 
-			stCoSysEnv_t name = { (char*)n,0 };
+			stCoSysEnv_t name = { (char*)n, 0 };
 
-			stCoSysEnv_t *e = (stCoSysEnv_t*)bsearch( &name,arr->data,arr->cnt,sizeof(name),co_sysenv_comp );
+			stCoSysEnv_t *e = (stCoSysEnv_t*)bsearch( &name, arr->data, arr->cnt, sizeof(name), co_sysenv_comp );
 
 			if( e )
 			{
@@ -874,7 +947,7 @@ char *getenv( const char *n )
 	{
 		stCoRoutine_t *self = co_self();
 
-		stCoSysEnv_t name = { (char*)n,0 };
+		stCoSysEnv_t name = { (char*)n, 0 };
 
 		if( !self->pvEnv )
 		{
@@ -882,7 +955,7 @@ char *getenv( const char *n )
 		}
 		stCoSysEnvArr_t *arr = (stCoSysEnvArr_t*)(self->pvEnv);
 
-		stCoSysEnv_t *e = (stCoSysEnv_t*)bsearch( &name,arr->data,arr->cnt,sizeof(name),co_sysenv_comp );
+		stCoSysEnv_t *e = (stCoSysEnv_t*)bsearch( &name, arr->data, arr->cnt, sizeof(name), co_sysenv_comp );
 
 		if( e )
 		{
@@ -989,7 +1062,7 @@ struct hostent *co_gethostbyname(const char *name)
 #endif
 
 
-void co_enable_hook_sys() //�⺯������������,�����ļ��ᱻ���ԣ�����
+void co_enable_hook_sys() //这函数必须在这里,否则本文件会被忽略！！！
 {
 	stCoRoutine_t *co = GetCurrThreadCo();
 	if( co )

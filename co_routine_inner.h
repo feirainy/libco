@@ -27,20 +27,25 @@ struct stCoSpec_t
 	void *value;
 };
 
+/*
+ * 协程栈的数据结构表示
+ * co_alloc_stackmem 分配
+ */
 struct stStackMem_t
 {
-	stCoRoutine_t* occupy_co;
-	int stack_size;
-	char* stack_bp; //stack_buffer + stack_size
-	char* stack_buffer;
+	stCoRoutine_t* occupy_co;  // stack由哪个co使用
+	int stack_size;      // stack size
+    char* stack_bp;      // stack_buffer + stack_size，指向栈尾的指针，因为栈向内存低地址生长
+	char* stack_buffer;  // stack buffer, 动态分配by co_alloc_stackmem
 
 };
 
+// co_get_stackmem
 struct stShareStack_t
 {
-	unsigned int alloc_idx;
+	unsigned int alloc_idx;  // 每有一个协程接入就+1，返回alloc_idx % count对应的stack
 	int stack_size;
-	int count;
+	int count;  // stack_array size
 	stStackMem_t** stack_array;
 };
 
@@ -51,18 +56,17 @@ struct stCoRoutine_t
 	stCoRoutineEnv_t *env;
 	pfn_co_routine_t pfn;
 	void *arg;
-	coctx_t ctx;
+	coctx_t ctx;          // 上下文表示，reg + stack(size+sp)，sp指向stack_mem里的stack buffer
 
-	char cStart;
-	char cEnd;
-	char cIsMain;
-	char cEnableSysHook;
+	char cStart;          // 在执行协程前先置1(co_resume), 置1以后不会再置0
+    char cEnd;            // 在执行协程pfn以后置1
+	char cIsMain;         // env下的第一个协程，pfn为NULL
+	char cEnableSysHook;  // 自定义协程函数首次运行前调用co_enable_hook_sys()置位
 	char cIsShareStack;
 
-	void *pvEnv;
+	void *pvEnv;  // ??
 
-	//char sRunStack[ 1024 * 128 ];
-	stStackMem_t* stack_mem;
+	stStackMem_t* stack_mem;  // 协程栈
 
 
 	//save satck buffer while confilct on same stack_buffer;
@@ -95,14 +99,14 @@ struct stTimeoutItem_t ;
 
 stTimeout_t *AllocTimeout( int iSize );
 void 	FreeTimeout( stTimeout_t *apTimeout );
-int  	AddTimeout( stTimeout_t *apTimeout,stTimeoutItem_t *apItem ,uint64_t allNow );
+int  	AddTimeout( stTimeout_t *apTimeout, stTimeoutItem_t *apItem ,uint64_t allNow );
 
 struct stCoEpoll_t;
 stCoEpoll_t * AllocEpoll();
 void 		FreeEpoll( stCoEpoll_t *ctx );
 
 stCoRoutine_t *		GetCurrThreadCo();
-void 				SetEpoll( stCoRoutineEnv_t *env,stCoEpoll_t *ev );
+void 				SetEpoll( stCoRoutineEnv_t *env, stCoEpoll_t *ev );
 
 typedef void (*pfnCoRoutineFunc_t)();
 

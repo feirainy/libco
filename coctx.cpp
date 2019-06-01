@@ -93,12 +93,28 @@ int coctx_init( coctx_t *ctx )
 	memset( ctx,0,sizeof(*ctx));
 	return 0;
 }
-int coctx_make( coctx_t *ctx,coctx_pfn_t pfn,const void *s,const void *s1 )
-{
-	//make room for coctx_param
-	char *sp = ctx->ss_sp + ctx->ss_size - sizeof(coctx_param_t);
-	sp = (char*)((unsigned long)sp & -16L);
 
+/*
+ * 置ctx的指令跳转地址IP，栈寄存器SP，协程函数的2个输入参数指针
+ * input:
+ *     pfn
+ *     s
+ *     s1
+ * output:
+ *     ctx
+ */
+int coctx_make( coctx_t* ctx, coctx_pfn_t pfn, const void* s, const void* s1 )
+{
+    // 栈：
+    // 高地址
+    // | param->s2: s |
+    // | param->s1: s1|  <- sp
+    // |              |  <- esp(不存数据吗?????)
+    // 低地址
+
+	//make room for coctx_param
+	char* sp = ctx->ss_sp + ctx->ss_size - sizeof(coctx_param_t);  // 栈底内存为coctx_param_t预留，执行这个协程时的2个指针输入参数
+	sp = (char*)((unsigned long)sp & -16L);                        // sp栈底（不在栈内）地址对齐，低位0x00，向低地址方向对齐所以没有问题
 	
 	coctx_param_t* param = (coctx_param_t*)sp ;
 	param->s1 = s;
@@ -106,25 +122,26 @@ int coctx_make( coctx_t *ctx,coctx_pfn_t pfn,const void *s,const void *s1 )
 
 	memset(ctx->regs, 0, sizeof(ctx->regs));
 
-	ctx->regs[ kESP ] = (char*)(sp) - sizeof(void*);
+	ctx->regs[ kESP ] = (char*)(sp) - sizeof(void*);               // esp指向栈底（在栈内）
 	ctx->regs[ kEIP ] = (char*)pfn;
 
 	return 0;
 }
+
 #elif defined(__x86_64__)
-int coctx_make( coctx_t *ctx,coctx_pfn_t pfn,const void *s,const void *s1 )
+int coctx_make( coctx_t *ctx, coctx_pfn_t pfn, const void *s, const void *s1 )
 {
-	char *sp = ctx->ss_sp + ctx->ss_size;
-	sp = (char*) ((unsigned long)sp & -16LL  );
+	char *sp = ctx->ss_sp + ctx->ss_size;        // ss_sp为栈buffer低地址，sp指向栈底+8（因为栈向低地址生长）
+	sp = (char*) ((unsigned long)sp & -16LL  );  // sp栈底（不在栈内）地址对齐，低位0x00，向低地址方向对齐所以没有问题
 
-	memset(ctx->regs, 0, sizeof(ctx->regs));
+	memset(ctx->regs, 0, sizeof(ctx->regs));     // register清零
 
-	ctx->regs[ kRSP ] = sp - 8;
+	ctx->regs[ kRSP ] = sp - 8;                  // esp指向栈底（在栈内）
 
-	ctx->regs[ kRETAddr] = (char*)pfn;
+    ctx->regs[ kRETAddr] = (char*)pfn;           // 跳转地址
 
-	ctx->regs[ kRDI ] = (char*)s;
-	ctx->regs[ kRSI ] = (char*)s1;
+	ctx->regs[ kRDI ] = (char*)s;                // 1st argument ???
+	tx->regs[ kRSI ] = (char*)s1;                // 2nd argument ???
 	return 0;
 }
 

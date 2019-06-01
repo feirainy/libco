@@ -30,11 +30,11 @@ struct stShareStack_t;
 
 struct stCoRoutineAttr_t
 {
-	int stack_size;
+	int stack_size;  // 协程栈大小
 	stShareStack_t*  share_stack;
 	stCoRoutineAttr_t()
 	{
-		stack_size = 128 * 1024;
+		stack_size = 128 * 1024;  // 128K
 		share_stack = NULL;
 	}
 }__attribute__ ((packed));
@@ -45,7 +45,7 @@ typedef void *(*pfn_co_routine_t)( void * );
 
 //2.co_routine
 
-int 	co_create( stCoRoutine_t **co,const stCoRoutineAttr_t *attr,void *(*routine)(void*),void *arg );
+int 	co_create( stCoRoutine_t **co, const stCoRoutineAttr_t *attr, void *(*routine)(void*),void *arg );
 void    co_resume( stCoRoutine_t *co );
 void    co_yield( stCoRoutine_t *co );
 void    co_yield_ct(); //ct = current thread
@@ -53,8 +53,8 @@ void    co_release( stCoRoutine_t *co );
 
 stCoRoutine_t *co_self();
 
-int		co_poll( stCoEpoll_t *ctx,struct pollfd fds[], nfds_t nfds, int timeout_ms );
-void 	co_eventloop( stCoEpoll_t *ctx,pfn_co_eventloop_t pfn,void *arg );
+int		co_poll( stCoEpoll_t *ctx, struct pollfd fds[], nfds_t nfds, int timeout_ms );
+void 	co_eventloop( stCoEpoll_t *ctx, pfn_co_eventloop_t pfn, void *arg );
 
 //3.specific
 

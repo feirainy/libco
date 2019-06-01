@@ -24,14 +24,16 @@
 
 #if !defined( __APPLE__ ) && !defined( __FreeBSD__ )
 
-int	co_epoll_wait( int epfd,struct co_epoll_res *events,int maxevents,int timeout )
+int	co_epoll_wait( int epfd, struct co_epoll_res *events, int maxevents, int timeout )
 {
-	return epoll_wait( epfd,events->events,maxevents,timeout );
+	return epoll_wait( epfd, events->events, maxevents, timeout );
 }
-int	co_epoll_ctl( int epfd,int op,int fd,struct epoll_event * ev )
+
+int	co_epoll_ctl( int epfd, int op, int fd, struct epoll_event * ev )
 {
-	return epoll_ctl( epfd,op,fd,ev );
+	return epoll_ctl( epfd, op, fd, ev );
 }
+
 int	co_epoll_create( int size )
 {
 	return epoll_create( size );
@@ -43,11 +45,12 @@ struct co_epoll_res *co_epoll_res_alloc( int n )
 		(struct co_epoll_res *)malloc( sizeof( struct co_epoll_res ) );
 
 	ptr->size = n;
-	ptr->events = (struct epoll_event*)calloc( 1,n * sizeof( struct epoll_event ) );
+	ptr->events = (struct epoll_event*)calloc( 1, n * sizeof( struct epoll_event ) );
 
 	return ptr;
 
 }
+
 void co_epoll_res_free( struct co_epoll_res * ptr )
 {
 	if( !ptr ) return;
@@ -66,7 +69,7 @@ private:
 public:
 	clsFdMap()
 	{
-		memset( m_pp,0,sizeof(m_pp) );
+		memset( m_pp, 0, sizeof(m_pp) );
 	}
 	~clsFdMap()
 	{
@@ -81,10 +84,10 @@ public:
 	}
 	inline int clear( int fd )
 	{
-		set( fd,NULL );
+		set( fd, NULL );
 		return 0;
 	}
-	inline int set( int fd,const void * ptr )
+	inline int set( int fd, const void * ptr )
 	{
 		int idx = fd / row_size;
 		if( idx < 0 || idx >= sizeof(m_pp)/sizeof(m_pp[0]) )
@@ -94,7 +97,7 @@ public:
 		}
 		if( !m_pp[ idx ] ) 
 		{
-			m_pp[ idx ] = (void**)calloc( 1,sizeof(void*) * col_size );
+			m_pp[ idx ] = (void**)calloc( 1, sizeof(void*) * col_size );
 		}
 		m_pp[ idx ][ fd % col_size ] = (void*)ptr;
 		return 0;
@@ -134,7 +137,7 @@ int co_epoll_create( int size )
 {
 	return kqueue();
 }
-int co_epoll_wait( int epfd,struct co_epoll_res *events,int maxevents,int timeout )
+int co_epoll_wait( int epfd, struct co_epoll_res *events, int maxevents, int timeout )
 {
 	struct timespec t = { 0 };
 	if( timeout > 0 )
@@ -154,7 +157,7 @@ int co_epoll_wait( int epfd,struct co_epoll_res *events,int maxevents,int timeou
 		if( 0 == ptr->fire_idx )
 		{
 			ptr->fire_idx = i + 1;
-			memset( ev,0,sizeof(*ev) );
+			memset( ev, 0, sizeof(*ev) );
 			++j;
 		}
 		else
@@ -177,7 +180,7 @@ int co_epoll_wait( int epfd,struct co_epoll_res *events,int maxevents,int timeou
 	}
 	return j;
 }
-int co_epoll_del( int epfd,int fd )
+int co_epoll_del( int epfd, int fd )
 {
 
 	struct timespec t = { 0 };
@@ -189,7 +192,7 @@ int co_epoll_del( int epfd,int fd )
 		kev.ident = fd;
 		kev.filter = EVFILT_READ;
 		kev.flags = EV_DELETE;
-		kevent( epfd,&kev,1, NULL,0,&t );
+		kevent( epfd,&kev, 1, NULL, 0,&t );
 	}
 	if( EPOLLOUT & ptr->events )
 	{
@@ -197,17 +200,17 @@ int co_epoll_del( int epfd,int fd )
 		kev.ident = fd;
 		kev.filter = EVFILT_WRITE;
 		kev.flags = EV_DELETE;
-		kevent( epfd,&kev,1, NULL,0,&t );
+		kevent( epfd,&kev, 1, NULL, 0,&t );
 	}
 	get_fd_map()->clear( fd );
 	free( ptr );
 	return 0;
 }
-int co_epoll_ctl( int epfd,int op,int fd,struct epoll_event * ev )
+int co_epoll_ctl( int epfd, int op, int fd, struct epoll_event * ev )
 {
 	if( EPOLL_CTL_DEL == op )
 	{
-		return co_epoll_del( epfd,fd );
+		return co_epoll_del( epfd, fd );
 	}
 
 	const int flags = ( EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLHUP );
@@ -230,8 +233,8 @@ int co_epoll_ctl( int epfd,int op,int fd,struct epoll_event * ev )
 	struct kevent_pair_t *ptr = (struct kevent_pair_t*)get_fd_map()->get( fd );
 	if( !ptr )
 	{
-		ptr = (kevent_pair_t*)calloc(1,sizeof(kevent_pair_t));
-		get_fd_map()->set( fd,ptr );
+		ptr = (kevent_pair_t*)calloc(1, sizeof(kevent_pair_t));
+		get_fd_map()->set( fd, ptr );
 	}
 
 	int ret = 0;
@@ -245,15 +248,15 @@ int co_epoll_ctl( int epfd,int op,int fd,struct epoll_event * ev )
 		if( ptr->events & EPOLLIN ) 
 		{
 			struct kevent kev = { 0 };
-			EV_SET( &kev,fd,EVFILT_READ,EV_DELETE,0,0,NULL );
-			kevent( epfd, &kev,1, NULL,0, &t );
+			EV_SET( &kev, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL );
+			kevent( epfd, &kev, 1, NULL, 0, &t );
 		}	
 		//1.delete if exists
 		if( ptr->events & EPOLLOUT ) 
 		{
 			struct kevent kev = { 0 };
-			EV_SET( &kev,fd,EVFILT_WRITE,EV_DELETE,0,0,NULL );
-			ret = kevent( epfd, &kev,1, NULL,0, &t );
+			EV_SET( &kev, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL );
+			ret = kevent( epfd, &kev, 1, NULL, 0, &t );
 			// printf("delete write ret %d\n",ret );
 		}
 	}
@@ -265,16 +268,16 @@ int co_epoll_ctl( int epfd,int op,int fd,struct epoll_event * ev )
 			
 			//2.add
 			struct kevent kev = { 0 };
-			EV_SET( &kev,fd,EVFILT_READ,EV_ADD,0,0,ptr );
-			ret = kevent( epfd, &kev,1, NULL,0, &t );
+			EV_SET( &kev, fd, EVFILT_READ, EV_ADD, 0, 0, ptr );
+			ret = kevent( epfd, &kev, 1, NULL, 0, &t );
 			if( ret ) break;
 		}
 		if( ev->events & EPOLLOUT )
 		{
 				//2.add
 			struct kevent kev = { 0 };
-			EV_SET( &kev,fd,EVFILT_WRITE,EV_ADD,0,0,ptr );
-			ret = kevent( epfd, &kev,1, NULL,0, &t );
+			EV_SET( &kev, fd, EVFILT_WRITE, EV_ADD, 0, 0, ptr );
+			ret = kevent( epfd, &kev, 1, NULL, 0, &t );
 			if( ret ) break;
 		}
 	} while( 0 );
@@ -299,8 +302,8 @@ struct co_epoll_res *co_epoll_res_alloc( int n )
 		(struct co_epoll_res *)malloc( sizeof( struct co_epoll_res ) );
 
 	ptr->size = n;
-	ptr->events = (struct epoll_event*)calloc( 1,n * sizeof( struct epoll_event ) );
-	ptr->eventlist = (struct kevent*)calloc( 1,n * sizeof( struct kevent) );
+	ptr->events = (struct epoll_event*)calloc( 1, n * sizeof( struct epoll_event ) );
+	ptr->eventlist = (struct kevent*)calloc( 1, n * sizeof( struct kevent) );
 
 	return ptr;
 }
